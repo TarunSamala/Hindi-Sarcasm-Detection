@@ -1,0 +1,8 @@
+               precision    recall  f1-score   support
+
+non_sarcastic       0.94      1.00      0.97       265
+    sarcastic       0.97      0.67      0.80        55
+
+     accuracy                           0.94       320
+    macro avg       0.95      0.83      0.88       320
+ weighted avg       0.94      0.94      0.94       320
