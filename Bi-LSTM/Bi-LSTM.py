@@ -1,41 +1,46 @@
-import pandas as pd
+import os
+import re
 import numpy as np
 import tensorflow as tf
-import re
-import os
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
+from tensorflow.keras import regularizers
+from tensorflow.keras.layers import Input, Embedding, Bidirectional, LSTM, Dense, Dropout, SpatialDropout1D, GaussianNoise
+from tensorflow.keras.models import Model
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+import pandas as pd
 
-# Suppress TensorFlow info logs
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-tf.get_logger().setLevel('ERROR')
+# ---------------------- Configuration ---------------------- #
+MAX_LEN = 35
+VOCAB_SIZE = 12000
+EMBEDDING_DIM = 96
+BATCH_SIZE = 64  # Reduced batch size
+EPOCHS = 40
+OUTPUT_DIR = "bilstm_hindi_sarcasm_outputs"
+SARCASTIC_PATH = "../data/Sarcasm_Hindi_Tweets-SARCASTIC.csv"
+NON_SARCASTIC_PATH = "../data/Sarcasm_Hindi_Tweets-NON-SARCASTIC.csv"
 
-# Create output directory
-os.makedirs('sarcasm_outputs', exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Text cleaning function for Hindi tweets
+# ---------------------- Text Cleaning ---------------------- #
 def clean_text(text):
     text = str(text)
-    # Remove URLs
     text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
-    # Remove mentions
     text = re.sub(r'@\w+', '', text)
-    # Remove hashtags (keep the text)
     text = re.sub(r'#(\w+)', r'\1', text)
-    # Keep Hindi characters (Devanagari script), English letters, spaces, and punctuation
     text = ''.join([char for char in text if (0x0900 <= ord(char) <= 0x097F) or char.isalpha() or char.isspace() or char in '!?.,:;'])
-    # Normalize whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# Load and preprocess data
-def load_data():
-    sarcastic = pd.read_csv('../data/Sarcasm_Hindi_Tweets-SARCASTIC.csv')
-    non_sarcastic = pd.read_csv('../data/Sarcasm_Hindi_Tweets-NON-SARCASTIC.csv')
+# ---------------------- Data Loading ---------------------- #
+def load_data(sarcastic_path, non_sarcastic_path):
+    sarcastic = pd.read_csv(sarcastic_path)
+    non_sarcastic = pd.read_csv(non_sarcastic_path)
     sarcastic['label'] = 1
     non_sarcastic['label'] = 0
     df = pd.concat([sarcastic, non_sarcastic], ignore_index=True)
@@ -43,146 +48,146 @@ def load_data():
     df = df.dropna(subset=['text'])
     df['clean_tweet'] = df['text'].apply(clean_text)
     df = df[df['clean_tweet'].str.strip() != '']
-    print("Class distribution:")
-    print(df['label'].value_counts())
-    return df
+    return df['clean_tweet'].tolist(), df['label'].to_numpy()
 
-# Parameters
-VOCAB_SIZE = 20000  # Increased to capture more Hindi vocabulary
-MAX_LENGTH = 60     # Increased to capture longer tweets
-EMBEDDING_DIM = 256 # Increased for richer representations
-BATCH_SIZE = 32
-EPOCHS = 4
+texts, labels = load_data(SARCASTIC_PATH, NON_SARCASTIC_PATH)
+X_train, X_test, y_train, y_test = train_test_split(texts, labels, test_size=0.2, random_state=42, stratify=labels)
 
-# Build Bi-LSTM model
-def build_model():
-    model = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=(MAX_LENGTH,)),
-        tf.keras.layers.Embedding(VOCAB_SIZE, EMBEDDING_DIM),
-        tf.keras.layers.SpatialDropout1D(0.3),
-        tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(
-            256,
-            return_sequences=True,
-            kernel_regularizer=tf.keras.regularizers.l2(0.005),
-            recurrent_dropout=0.2
-        )),
-        tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(
-            128,
-            kernel_regularizer=tf.keras.regularizers.l2(0.005),
-            recurrent_dropout=0.2
-        )),
-        tf.keras.layers.Dense(128, activation='relu',
-                              kernel_regularizer=tf.keras.regularizers.l2(0.005)),
-        tf.keras.layers.Dropout(0.5),
-        tf.keras.layers.Dense(1, activation='sigmoid')
-    ])
+# ---------------------- Tokenization ---------------------- #
+tokenizer = Tokenizer(num_words=VOCAB_SIZE, oov_token='<OOV>', filters='')
+tokenizer.fit_on_texts(X_train)
+X_train_seq = tokenizer.texts_to_sequences(X_train)
+X_test_seq = tokenizer.texts_to_sequences(X_test)
+X_train_padded = pad_sequences(X_train_seq, maxlen=MAX_LEN, padding='post')
+X_test_padded = pad_sequences(X_test_seq, maxlen=MAX_LEN, padding='post')
+
+# ---------------------- Enhanced Model ---------------------- #
+def build_bilstm_model():
+    inputs = Input(shape=(MAX_LEN,))
+    
+    # Embedding with Gaussian Noise
+    x = Embedding(VOCAB_SIZE, EMBEDDING_DIM, 
+                embeddings_regularizer=regularizers.l2(1e-4),
+                mask_zero=True)(inputs)
+    x = GaussianNoise(0.1)(x)
+    
+    # First BiLSTM with Spatial Dropout
+    x = Bidirectional(LSTM(64, return_sequences=True,
+                         kernel_regularizer=regularizers.l2(1e-4),
+                         recurrent_regularizer=regularizers.l2(1e-4),
+                         dropout=0.3,
+                         recurrent_dropout=0.2))(x)
+    x = SpatialDropout1D(0.4)(x)
+    
+    # Second BiLSTM
+    x = Bidirectional(LSTM(32,
+                         kernel_regularizer=regularizers.l2(1e-4),
+                         recurrent_regularizer=regularizers.l2(1e-4),
+                         dropout=0.3,
+                         recurrent_dropout=0.2))(x)
+    
+    # Dense Layers with Regularization
+    x = Dense(64, activation='relu', 
+             kernel_regularizer=regularizers.l2(1e-4))(x)
+    x = Dropout(0.5)(x)
+    x = Dense(32, activation='relu', 
+             kernel_regularizer=regularizers.l2(1e-4))(x)
+    x = Dropout(0.4)(x)
+    
+    outputs = Dense(1, activation='sigmoid')(x)
+    
+    model = Model(inputs=inputs, outputs=outputs)
+    
+    # Optimizer with Weight Decay
+    optimizer = tf.keras.optimizers.AdamW(
+        learning_rate=2e-4,
+        weight_decay=1e-4,
+        clipnorm=1.0
+    )
+    
     model.compile(
+        optimizer=optimizer,
         loss='binary_crossentropy',
-        optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),  # Adjusted for faster convergence
-        metrics=['accuracy', tf.keras.metrics.Precision(), tf.keras.metrics.Recall()]
+        metrics=['accuracy', 
+                tf.keras.metrics.Precision(name='precision'),
+                tf.keras.metrics.Recall(name='recall')]
     )
     return model
 
-# Main execution
-if __name__ == "__main__":
-    # Load and prepare data
-    df = load_data()
-    X_train, X_test, y_train, y_test = train_test_split(
-        df['clean_tweet'],
-        df['label'],
-        test_size=0.2,
-        random_state=42,
-        stratify=df['label']  # Ensure balanced classes in split
-    )
+# ---------------------- Training Setup ---------------------- #
+# Class weights with smoothing
+class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+class_weights = dict(enumerate(class_weights * 0.9))  # Smooth class weights
 
-    # Tokenize and pad sequences
-    tokenizer = Tokenizer(num_words=VOCAB_SIZE, oov_token='<OOV>')
-    tokenizer.fit_on_texts(X_train)
-    train_sequences = tokenizer.texts_to_sequences(X_train)
-    test_sequences = tokenizer.texts_to_sequences(X_test)
-    train_padded = pad_sequences(train_sequences, maxlen=MAX_LENGTH, padding='post')
-    test_padded = pad_sequences(test_sequences, maxlen=MAX_LENGTH, padding='post')
+# Callbacks with validation loss monitoring
+callbacks = [
+    EarlyStopping(monitor='val_loss', patience=10, 
+                 min_delta=0.001, restore_best_weights=True),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.5,
+                     patience=4, min_lr=1e-6, verbose=1)
+]
 
-    # Calculate class weights
-    non_sarcastic_count = sum(df['label'] == 0)
-    sarcastic_count = sum(df['label'] == 1)
-    total = non_sarcastic_count + sarcastic_count
-    class_weights = {
-        0: (1 / non_sarcastic_count) * (total / 2.0),
-        1: (1 / sarcastic_count) * (total / 2.0)
-    }
-    print("Class weights:", class_weights)
+# ---------------------- Training ---------------------- #
+model = build_bilstm_model()
+history = model.fit(
+    X_train_padded, y_train,
+    validation_data=(X_test_padded, y_test),
+    epochs=EPOCHS,
+    batch_size=BATCH_SIZE,
+    callbacks=callbacks,
+    class_weight=class_weights,
+    verbose=1
+)
 
-    # Define callbacks
-    early_stop = tf.keras.callbacks.EarlyStopping(
-        monitor='val_accuracy',
-        patience=5,
-        min_delta=0.005,
-        restore_best_weights=True
-    )
-    lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
-        monitor='val_loss',
-        factor=0.5,
-        patience=3
-    )
 
-    # Train the model
-    model = build_model()
-    history = model.fit(
-        train_padded,
-        y_train,
-        epochs=EPOCHS,
-        validation_data=(test_padded, y_test),
-        batch_size=BATCH_SIZE,
-        callbacks=[early_stop, lr_scheduler],
-        class_weight=class_weights
-    )
+# ---------------------- Visualization ---------------------- #
+plt.figure(figsize=(15, 6))
 
-    # Save training curves
-    plt.figure(figsize=(15, 5))
-    plt.subplot(1, 3, 1)
-    plt.plot(history.history['accuracy'], label='Train')
-    plt.plot(history.history['val_accuracy'], label='Validation')
-    plt.title('Accuracy Curves')
-    plt.ylabel('Accuracy')
-    plt.xlabel('Epoch')
-    plt.legend()
-    plt.subplot(1, 3, 2)
-    plt.plot(history.history['loss'], label='Train')
-    plt.plot(history.history['val_loss'], label='Validation')
-    plt.title('Loss Curves')
-    plt.ylabel('Loss')
-    plt.xlabel('Epoch')
-    plt.legend()
-    plt.subplot(1, 3, 3)
-    plt.plot(history.history['recall'], label='Train')
-    plt.plot(history.history['val_recall'], label='Validation')
-    plt.title('Recall Curves')
-    plt.ylabel('Recall')
-    plt.xlabel('Epoch')
-    plt.legend()
-    plt.savefig(os.path.join('sarcasm_outputs', 'training_curves.png'), bbox_inches='tight')
-    plt.close()
+# Accuracy plot
+plt.subplot(1, 2, 1)
+plt.plot(history.history['accuracy'], label='Train')
+plt.plot(history.history['val_accuracy'], label='Validation')
+plt.title('Accuracy Curves', pad=10)
+plt.ylabel('Accuracy')
+plt.xlabel('Epoch')
+plt.ylim(0.5, 1.0)
+plt.grid(linestyle='--', alpha=0.6)
+plt.legend()
 
-    # Generate predictions
-    y_pred = (model.predict(test_padded) > 0.5).astype(int).flatten()
+# Loss plot
+plt.subplot(1, 2, 2)
+plt.plot(history.history['loss'], label='Train')
+plt.plot(history.history['val_loss'], label='Validation')
+plt.title('Loss Curves', pad=10)
+plt.ylabel('Loss')
+plt.xlabel('Epoch')
+plt.ylim(0, 1.5)
+plt.grid(linestyle='--', alpha=0.6)
+plt.legend()
 
-    # Save classification report
-    report = classification_report(y_test, y_pred, target_names=['Non-Sarcastic', 'Sarcastic'], zero_division=0)
-    with open(os.path.join('sarcasm_outputs', 'classification_report.txt'), 'w') as f:
-        f.write("Classification Report:\n")
-        f.write(report)
+plt.tight_layout()
+plt.savefig(os.path.join(OUTPUT_DIR, 'training_curves.png'), dpi=300, bbox_inches='tight')
+plt.close()
 
-    # Save confusion matrix
-    plt.figure(figsize=(8, 6))
-    cm = confusion_matrix(y_test, y_pred)
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=['Non-Sarcastic', 'Sarcastic'],
-                yticklabels=['Non-Sarcastic', 'Sarcastic'])
-    plt.title('Confusion Matrix')
-    plt.ylabel('True Label')
-    plt.xlabel('Predicted Label')
-    plt.savefig(os.path.join('sarcasm_outputs', 'confusion_matrix.png'), bbox_inches='tight')
-    plt.close()
+# ---------------------- Evaluation ---------------------- #
+y_pred = (model.predict(X_test_padded) > 0.5).astype(int)
 
-    print("All results saved to 'sarcasm_outputs' directory")
+# Classification report
+report = classification_report(y_test, y_pred, target_names=['Not Sarcastic', 'Sarcastic'], zero_division=0)
+with open(os.path.join(OUTPUT_DIR, 'classification_report.txt'), 'w') as f:
+    f.write("Classification Report:\n")
+    f.write(report)
+
+# Confusion matrix
+plt.figure(figsize=(8, 6))
+cm = confusion_matrix(y_test, y_pred)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=['Not Sarcastic', 'Sarcastic'],
+            yticklabels=['Not Sarcastic', 'Sarcastic'])
+plt.title('Confusion Matrix')
+plt.ylabel('True Label')
+plt.xlabel('Predicted Label')
+plt.savefig(os.path.join(OUTPUT_DIR, 'confusion_matrix.png'), dpi=300, bbox_inches='tight')
+plt.close()
+
+print(f"\nAll outputs saved to: {os.path.abspath(OUTPUT_DIR)}")
