@@ -13,56 +13,51 @@ from tensorflow.keras.preprocessing.sequence import pad_sequences
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
-import pandas as pd
 
-# ---------------------- Configuration ---------------------- #
-MAX_LEN = 35
-VOCAB_SIZE = 12000
+# Configuration
+MAX_LEN = 50
+VOCAB_SIZE = 15000
 EMBEDDING_DIM = 96
-BATCH_SIZE = 64  # Reduced batch size
+BATCH_SIZE = 64
 EPOCHS = 40
-OUTPUT_DIR = "bilstm_hindi_sarcasm_outputs"
-SARCASTIC_PATH = "../data/Sarcasm_Hindi_Tweets-SARCASTIC.csv"
-NON_SARCASTIC_PATH = "../data/Sarcasm_Hindi_Tweets-NON-SARCASTIC.csv"
+MODEL_PATH = "optimized_bi_lstm.keras"
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+def load_dataset():
+    """Improved data loading with validation"""
+    tweets = {}
+    with open("../Dataset/Sarcasm_tweets.txt", "r", encoding='utf-8') as f:
+        current_id = ""
+        for line in f:
+            line = line.strip()
+            if line.isdigit():
+                current_id = line
+            elif current_id:
+                tweets[current_id] = line
 
-# ---------------------- Text Cleaning ---------------------- #
+    labels = {}
+    with open("../Dataset/Sarcasm_tweet_truth.txt", "r", encoding='utf-8') as f:
+        current_id = ""
+        for line in f:
+            line = line.strip()
+            if line.isdigit():
+                current_id = line
+            elif current_id:
+                labels[current_id] = 1 if line == "YES" else 0
+
+    valid_ids = [id for id in tweets if id in labels]
+    return [tweets[id] for id in valid_ids], np.array([labels[id] for id in valid_ids])
+
 def clean_text(text):
-    text = str(text)
-    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+    """Enhanced text cleaning preserving linguistic features"""
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text)
     text = re.sub(r'@\w+', '', text)
-    text = re.sub(r'#(\w+)', r'\1', text)
-    text = ''.join([char for char in text if (0x0900 <= ord(char) <= 0x097F) or char.isalpha() or char.isspace() or char in '!?.,:;'])
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'([!?])\1+', r'\1', text)  # Reduce repeated punctuation
+    text = re.sub(r'[^\w\s!?]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip().lower()
     return text
 
-# ---------------------- Data Loading ---------------------- #
-def load_data(sarcastic_path, non_sarcastic_path):
-    sarcastic = pd.read_csv(sarcastic_path)
-    non_sarcastic = pd.read_csv(non_sarcastic_path)
-    sarcastic['label'] = 1
-    non_sarcastic['label'] = 0
-    df = pd.concat([sarcastic, non_sarcastic], ignore_index=True)
-    df = df.drop_duplicates(subset=['text'])
-    df = df.dropna(subset=['text'])
-    df['clean_tweet'] = df['text'].apply(clean_text)
-    df = df[df['clean_tweet'].str.strip() != '']
-    return df['clean_tweet'].tolist(), df['label'].to_numpy()
-
-texts, labels = load_data(SARCASTIC_PATH, NON_SARCASTIC_PATH)
-X_train, X_test, y_train, y_test = train_test_split(texts, labels, test_size=0.2, random_state=42, stratify=labels)
-
-# ---------------------- Tokenization ---------------------- #
-tokenizer = Tokenizer(num_words=VOCAB_SIZE, oov_token='<OOV>', filters='')
-tokenizer.fit_on_texts(X_train)
-X_train_seq = tokenizer.texts_to_sequences(X_train)
-X_test_seq = tokenizer.texts_to_sequences(X_test)
-X_train_padded = pad_sequences(X_train_seq, maxlen=MAX_LEN, padding='post')
-X_test_padded = pad_sequences(X_test_seq, maxlen=MAX_LEN, padding='post')
-
-# ---------------------- Enhanced Model ---------------------- #
-def build_bilstm_model():
+def build_optimized_model():
+    """Enhanced Bi-LSTM architecture with robust regularization"""
     inputs = Input(shape=(MAX_LEN,))
     
     # Embedding with Gaussian Noise
@@ -114,80 +109,106 @@ def build_bilstm_model():
     )
     return model
 
-# ---------------------- Training Setup ---------------------- #
-# Class weights with smoothing
-class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-class_weights = dict(enumerate(class_weights * 0.9))  # Smooth class weights
+def plot_training_curves(history):
+    """Enhanced visualization with consistent scaling"""
+    plt.figure(figsize=(15, 6))
+    
+    # Accuracy plot
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['accuracy'], label='Train')
+    plt.plot(history.history['val_accuracy'], label='Validation')
+    plt.title('Accuracy Curves')
+    plt.ylabel('Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylim(0.5, 1.0)
+    plt.grid(linestyle='--', alpha=0.6)
+    plt.legend()
+    
+    # Loss plot
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['loss'], label='Train')
+    plt.plot(history.history['val_loss'], label='Validation')
+    plt.title('Loss Curves')
+    plt.ylabel('Loss')
+    plt.xlabel('Epoch')
+    plt.ylim(0, 1.5)
+    plt.grid(linestyle='--', alpha=0.6)
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.savefig('training_curves.png', dpi=300, bbox_inches='tight')
+    plt.close()
 
-# Callbacks with validation loss monitoring
-callbacks = [
-    EarlyStopping(monitor='val_loss', patience=10, 
-                 min_delta=0.001, restore_best_weights=True),
-    ReduceLROnPlateau(monitor='val_loss', factor=0.5,
-                     patience=4, min_lr=1e-6, verbose=1)
-]
+def main():
+    # Load and preprocess data
+    texts, labels = load_dataset()
+    texts = [clean_text(text) for text in texts]
+    
+    print(f"Class distribution: {np.bincount(labels)}")
+    print(f"Sarcastic ratio: {np.mean(labels):.2%}")
+    
+    # Tokenization
+    tokenizer = Tokenizer(num_words=VOCAB_SIZE, oov_token='<OOV>', filters='')
+    tokenizer.fit_on_texts(texts)
+    sequences = tokenizer.texts_to_sequences(texts)
+    padded = pad_sequences(sequences, maxlen=MAX_LEN, padding='post')
+    
+    # Stratified split
+    X_train, X_test, y_train, y_test = train_test_split(
+        padded, labels, test_size=0.2, 
+        stratify=labels, random_state=42,
+        shuffle=True
+    )
+    
+    # Class weights with smoothing
+    class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+    class_weights = dict(enumerate(class_weights * 0.9))  # Smooth class weights
+    
+    # Callbacks
+    callbacks = [
+        EarlyStopping(monitor='val_loss', patience=10, 
+                     min_delta=0.001, restore_best_weights=True),
+        ReduceLROnPlateau(monitor='val_loss', factor=0.5,
+                         patience=4, min_lr=1e-6, verbose=1),
+        ModelCheckpoint(MODEL_PATH, save_best_only=True)
+    ]
+    
+    # Build and train model
+    model = build_optimized_model()
+    history = model.fit(
+        X_train, y_train,
+        validation_data=(X_test, y_test),
+        epochs=EPOCHS,
+        batch_size=BATCH_SIZE,
+        callbacks=callbacks,
+        class_weight=class_weights,
+        verbose=1
+    )
+    
+    # Evaluation
+    y_pred = (model.predict(X_test) > 0.5).astype(int)
+    
+    # Save classification report
+    report = classification_report(y_test, y_pred, 
+                                  target_names=['Non-Sarcastic', 'Sarcastic'],
+                                  zero_division=0)
+    with open('classification_report.txt', 'w') as f:
+        f.write("Classification Report:\n")
+        f.write(report)
+    
+    # Confusion matrix
+    plt.figure(figsize=(8, 6))
+    cm = confusion_matrix(y_test, y_pred)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=['Non-Sarcastic', 'Sarcastic'],
+                yticklabels=['Non-Sarcastic', 'Sarcastic'])
+    plt.title('Confusion Matrix')
+    plt.ylabel('True Label')
+    plt.xlabel('Predicted Label')
+    plt.savefig('confusion_matrix.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    plot_training_curves(history)
 
-# ---------------------- Training ---------------------- #
-model = build_bilstm_model()
-history = model.fit(
-    X_train_padded, y_train,
-    validation_data=(X_test_padded, y_test),
-    epochs=EPOCHS,
-    batch_size=BATCH_SIZE,
-    callbacks=callbacks,
-    class_weight=class_weights,
-    verbose=1
-)
-
-
-# ---------------------- Visualization ---------------------- #
-plt.figure(figsize=(15, 6))
-
-# Accuracy plot
-plt.subplot(1, 2, 1)
-plt.plot(history.history['accuracy'], label='Train')
-plt.plot(history.history['val_accuracy'], label='Validation')
-plt.title('Accuracy Curves', pad=10)
-plt.ylabel('Accuracy')
-plt.xlabel('Epoch')
-plt.ylim(0.5, 1.0)
-plt.grid(linestyle='--', alpha=0.6)
-plt.legend()
-
-# Loss plot
-plt.subplot(1, 2, 2)
-plt.plot(history.history['loss'], label='Train')
-plt.plot(history.history['val_loss'], label='Validation')
-plt.title('Loss Curves', pad=10)
-plt.ylabel('Loss')
-plt.xlabel('Epoch')
-plt.ylim(0, 1.5)
-plt.grid(linestyle='--', alpha=0.6)
-plt.legend()
-
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'training_curves.png'), dpi=300, bbox_inches='tight')
-plt.close()
-
-# ---------------------- Evaluation ---------------------- #
-y_pred = (model.predict(X_test_padded) > 0.5).astype(int)
-
-# Classification report
-report = classification_report(y_test, y_pred, target_names=['Not Sarcastic', 'Sarcastic'], zero_division=0)
-with open(os.path.join(OUTPUT_DIR, 'classification_report.txt'), 'w') as f:
-    f.write("Classification Report:\n")
-    f.write(report)
-
-# Confusion matrix
-plt.figure(figsize=(8, 6))
-cm = confusion_matrix(y_test, y_pred)
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-            xticklabels=['Not Sarcastic', 'Sarcastic'],
-            yticklabels=['Not Sarcastic', 'Sarcastic'])
-plt.title('Confusion Matrix')
-plt.ylabel('True Label')
-plt.xlabel('Predicted Label')
-plt.savefig(os.path.join(OUTPUT_DIR, 'confusion_matrix.png'), dpi=300, bbox_inches='tight')
-plt.close()
-
-print(f"\nAll outputs saved to: {os.path.abspath(OUTPUT_DIR)}")
+if __name__ == "__main__":
+    main()
