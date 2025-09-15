@@ -144,7 +144,7 @@ if __name__ == '__main__':
     cm = confusion_matrix(y_test, y_pred_labels)
     plt.figure(figsize=(6, 5))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=['Non-Sarcastic', 'Sarcastic'], yticklabels=['Non-Sarcastic', 'Sarcastic'])
+                xticklabels=['Non-Sarcastic', 'Sarcastic'], yticklabels=['Non-Sarcastic', 'Sarcastic'], annot_kws={"size": 16})
     plt.title('Confusion Matrix')
     plt.ylabel('True')
     plt.xlabel('Predicted')
