@@ -26,45 +26,32 @@ def clean_hindi_text(text):
 
 # Load and preprocess data
 def load_data():
-    # Load dataset
     df_sarcastic = pd.read_csv('../data/Sarcasm_Hindi_Tweets-SARCASTIC.csv')
     df_non_sarcastic = pd.read_csv('../data/Sarcasm_Hindi_Tweets-NON-SARCASTIC.csv')
 
-    # Assign labels
     df_sarcastic['label'] = 'sarcastic'
     df_non_sarcastic['label'] = 'non_sarcastic'
 
-    # Combine datasets
     df = pd.concat([df_sarcastic, df_non_sarcastic], axis=0)
 
-    # Drop unnecessary columns
     columns_to_drop = ['username', 'acctdesc', 'location', 'following', 'followers', 
                        'totaltweets', 'usercreatedts', 'tweetcreatedts', 'retweetcount', 'hashtags']
     df = df.drop(columns=[col for col in columns_to_drop if col in df.columns], axis=1)
 
-    # Reset index
     df = df.reset_index(drop=True)
 
-    # Apply text cleaning
     df['clean_text'] = df['text'].apply(clean_hindi_text)
 
-    # Check for duplicates in clean_text
     duplicates = df[df.duplicated('clean_text', keep=False)]
     if not duplicates.empty:
         print(f"Found {len(duplicates)} duplicates in clean_text.")
-        
-        # Check for label conflicts among duplicates
         conflict_groups = duplicates.groupby('clean_text')['label'].nunique()
         conflicts = conflict_groups[conflict_groups > 1]
-        
         if not conflicts.empty:
             print(f"Found {len(conflicts)} clean_text entries with conflicting labels.")
-            # Remove entries with conflicting labels
             conflict_texts = conflicts.index
             df = df[~df['clean_text'].isin(conflict_texts)]
             print(f"Removed {len(conflict_texts)} conflicting entries.")
-        
-        # Remove duplicates, keeping the first occurrence
         df = df.drop_duplicates(subset='clean_text', keep='first')
         print(f"Removed duplicates, keeping first occurrence. New size: {len(df)}")
     else:
@@ -72,40 +59,28 @@ def load_data():
 
     return df
 
-# Main execution
 if __name__ == '__main__':
-    # Load and preprocess data
     df = load_data()
     
-    # Print basic statistics
     print("Total samples:", len(df))
     print("Class distribution:\n", df['label'].value_counts())
     
-    # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(
         df['clean_text'], df['label'], test_size=0.3, stratify=df['label'], random_state=91
     )
     
-    # Text Preprocessing with ktrain
-    t = text.Transformer("monsoon-nlp/hindi-bert", maxlen=256, class_names=list(set(y_train.values)))
+    t = text.Transformer("monsoon-nlp/hindi-bert", maxlen=60, class_names=list(set(y_train.values)))  # Reduced maxlen
     
-    # Preprocess train and test data
     trn = t.preprocess_train(X_train.to_numpy(), y_train.to_numpy())
     evalr = t.preprocess_test(X_test.to_numpy(), y_test.to_numpy())
     
-    # Get the model
     model = t.get_classifier()
+    learner = ktrain.get_learner(model, train_data=trn, val_data=evalr, batch_size=8)  # Increased batch_size
     
-    # Create learner with reduced batch size
-    learner = ktrain.get_learner(model, train_data=trn, val_data=evalr, batch_size=4)
+    history = learner.fit_onecycle(1e-4, 7)  # Increased epochs
     
-    # Train the model
-    history = learner.fit_onecycle(1e-4, 3)
-    
-    # Save training curves
     def save_training_curves(history):
         plt.figure(figsize=(10, 4))
-        # Accuracy plot
         plt.subplot(1, 2, 1)
         plt.plot(history.history['accuracy'], label='Train')
         plt.plot(history.history['val_accuracy'], label='Val')
@@ -114,7 +89,6 @@ if __name__ == '__main__':
         plt.xlabel('Epoch')
         plt.ylabel('Accuracy')
         plt.legend()
-        # Loss plot
         plt.subplot(1, 2, 2)
         plt.plot(history.history['loss'], label='Train')
         plt.plot(history.history['val_loss'], label='Val')
@@ -128,27 +102,27 @@ if __name__ == '__main__':
     
     save_training_curves(history)
     
-    # Prediction
     predictor = ktrain.get_predictor(learner.model, preproc=t)
-    y_pred = predictor.predict(X_test.to_numpy())
+    y_pred = predictor.predict(X_test.to_numpy(), return_proba=False)
+    if not isinstance(y_pred[0], str):
+        y_pred_labels = [t.get_classes()[int(p)] for p in y_pred]
+    else:
+        y_pred_labels = y_pred
     
-    # Convert y_pred to labels if necessary
-    y_pred_labels = y_pred if isinstance(y_pred[0], str) else [predictor.get_classes()[p] for p in y_pred]
-    
-    # Classification report
     report = classification_report(y_test, y_pred_labels)
     with open('sarcasm_outputs/classification_report.txt', 'w') as f:
         f.write(report)
     
-    # Confusion matrix
     cm = confusion_matrix(y_test, y_pred_labels)
     plt.figure(figsize=(6, 5))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=['Non-Sarcastic', 'Sarcastic'], yticklabels=['Non-Sarcastic', 'Sarcastic'], annot_kws={"size": 16})
-    plt.title('Confusion Matrix')
-    plt.ylabel('True')
-    plt.xlabel('Predicted')
-    plt.savefig('sarcasm_outputs/confusion_matrix.png')
+                xticklabels=['Non-Sarcastic', 'Sarcastic'], yticklabels=['Non-Sarcastic', 'Sarcastic'], annot_kws={"size": 22})
+    plt.title('Confusion Matrix', fontsize=20)
+    plt.ylabel('True', fontsize=20)
+    plt.xlabel('Predicted', fontsize=20)
+    plt.xticks(fontsize=22)
+    plt.yticks(fontsize=22)
+    plt.savefig('sarcasm_outputs/confusion_matrix.png', dpi=300, bbox_inches='tight')
     plt.close()
     
     print("Results saved in 'sarcasm_outputs' directory.")
