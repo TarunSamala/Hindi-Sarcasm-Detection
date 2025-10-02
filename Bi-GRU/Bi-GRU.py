@@ -21,7 +21,7 @@ VOCAB_SIZE = 12000         # Maximum vocabulary size
 EMBEDDING_DIM = 96         # Embedding dimensions
 BATCH_SIZE = 128
 EPOCHS = 40
-OUTPUT_DIR = "bigru_hindi_sarcasm_outputs"
+OUTPUT_DIR = "Sarcasm_outputs"
 SARCASTIC_PATH = "../data/Sarcasm_Hindi_Tweets-SARCASTIC.csv"
 NON_SARCASTIC_PATH = "../data/Sarcasm_Hindi_Tweets-NON-SARCASTIC.csv"
 
@@ -176,10 +176,12 @@ cm = confusion_matrix(y_test, y_pred)
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
             xticklabels=['Not Sarcastic', 'Sarcastic'],
             yticklabels=['Not Sarcastic', 'Sarcastic'], annot_kws={"size": 22})
-plt.title('Confusion Matrix')
-plt.ylabel('True Label')
-plt.xlabel('Predicted Label')
-plt.savefig(os.path.join(OUTPUT_DIR, 'confusion_matrix.png'), dpi=300, bbox_inches='tight')
+plt.title('Confusion Matrix', fontsize=20)
+plt.ylabel('True Label', fontsize=20)
+plt.xlabel('Predicted Label', fontsize=20)
+plt.xticks(fontsize=20)
+plt.yticks(fontsize=20)
+plt.savefig(os.path.join(OUTPUT_DIR, 'Confusion_matrix.png'), dpi=300, bbox_inches='tight')
 plt.close()
 
 print(f"\nAll outputs saved to: {os.path.abspath(OUTPUT_DIR)}")
